@@ -8,6 +8,62 @@ if not RunService:IsEdit() then
 	return
 end
 
+-- Bump this with every release pushed to GitHub: the Update button compares it with this file there.
+local VERSION = "2.0.3"
+local UPDATE_URL = "https://raw.githubusercontent.com/xKittyNyaa/CatalogLoader/main/CatalogLoader.lua"
+local UPDATE_SETTINGS = { version = "UpdateVersion", source = "UpdateSource" }
+
+-- True when version string a ("2.0.3") is newer than b ("2.0.2").
+local function isNewerVersion(a, b)
+	local x = { string.match(tostring(a), "^(%d+)%.(%d+)%.(%d+)$") }
+	local y = { string.match(tostring(b), "^(%d+)%.(%d+)%.(%d+)$") }
+	if #x < 3 or #y < 3 then
+		return false
+	end
+	for i = 1, 3 do
+		local p, q = tonumber(x[i]), tonumber(y[i])
+		if p ~= q then
+			return p > q
+		end
+	end
+	return false
+end
+
+-- Turns downloaded plugin source into a function that runs it as this plugin. Plugins can't write to
+-- the Plugins folder, so updates are kept in plugin settings and loaded through a ModuleScript.
+local function compileUpdate(source)
+	local module = Instance.new("ModuleScript")
+	module.Name = "CatalogLoaderUpdate"
+	local ok, result = pcall(function()
+		module.Source = "return function(plugin)\n" .. source .. "\nend"
+		return require(module)
+	end)
+	module:Destroy()
+	if ok and type(result) == "function" then
+		return result
+	end
+	return nil, ok and "the update didn't load" or result
+end
+
+-- A downloaded update newer than this file runs instead of it; one that's not newer (because this
+-- file was replaced with a newer copy) is cleared.
+do
+	local storedVersion = plugin:GetSetting(UPDATE_SETTINGS.version)
+	if storedVersion and storedVersion ~= VERSION then
+		if isNewerVersion(storedVersion, VERSION) then
+			local run, err = compileUpdate(plugin:GetSetting(UPDATE_SETTINGS.source) or "")
+			if run then
+				run(plugin)
+				return
+			end
+			warn("[Catalog Loader V2] Couldn't start the downloaded update, using V" .. VERSION .. ":", err)
+		else
+			plugin:SetSetting(UPDATE_SETTINGS.version, nil)
+			plugin:SetSetting(UPDATE_SETTINGS.source, nil)
+		end
+	end
+end
+
 local AvatarEditorService = game:GetService("AvatarEditorService")
 local AssetService = game:GetService("AssetService")
 local InsertService = game:GetService("InsertService")
@@ -721,13 +777,13 @@ local titleLabel = create("TextLabel", {
 })
 
 create("TextLabel", {
-	Name = "Credit",
+	Name = "Version",
 	Size = UDim2.fromOffset(180, 24),
 	Position = UDim2.fromScale(0.5, 0.5),
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	BackgroundTransparency = 1,
 	Font = FONT,
-	Text = "Created by Elaine",
+	Text = "V" .. VERSION,
 	TextSize = 18,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextStrokeTransparency = 0.6,
@@ -4651,8 +4707,22 @@ do
 	end
 	api.deleteCustomTheme = deleteCustomTheme
 
+	-- GitHub's copy of the plugin, kept when its VERSION is newer than this one. Checked once at startup.
+	local update = nil -- { version = "2.0.3", source = "..." }
+	local updateInstalled = false -- downloaded this session; it runs once Studio restarts
+	task.spawn(function()
+		local ok, source = pcall(HttpService.GetAsync, HttpService, UPDATE_URL, true)
+		if not ok then
+			return
+		end
+		local version = string.match(source, '\nlocal VERSION = "(%d+%.%d+%.%d+)"')
+		if version and isNewerVersion(version, VERSION) then
+			update = { version = version, source = source }
+		end
+	end)
+
 	function api.openSettings()
-		openPopup(settingsButton, "Settings", function(list)
+		local settingsPopup = openPopup(settingsButton, "Settings", function(list)
 			local order = 0
 			local function nextOrder()
 				order += 1
@@ -4770,7 +4840,47 @@ do
 				spawnWithLabel = on
 				plugin:SetSetting(SETTING.spawnWithLabel, on)
 			end)
+
+			-- Only shown while GitHub has a newer version than the one running.
+			if update then
+				local restartText = "Restart Studio to use V" .. update.version
+				local updateButton
+				updateButton = popupButton(list, nextOrder(), updateInstalled and restartText or ("Update to V" .. update.version), function()
+					if updateInstalled then
+						setStatus(restartText)
+						return
+					end
+					updateButton.Text = "Updating..."
+					local run, err = compileUpdate(update.source)
+					if not run then
+						updateButton.Text = "Update to V" .. update.version
+						setStatus("Update failed: " .. tostring(err))
+						return
+					end
+					plugin:SetSetting(UPDATE_SETTINGS.source, update.source)
+					plugin:SetSetting(UPDATE_SETTINGS.version, update.version)
+					updateInstalled = true
+					updateButton.Text = restartText
+					setStatus("Updated to V" .. update.version .. "! Restart Studio to use the new version.")
+					print("[Catalog Loader V2] Updated to V" .. update.version .. ". Restart Studio to use the new version.")
+				end)
+			end
 		end, { width = 300, maxHeight = 700 })
+
+		create("TextLabel", {
+			Name = "Credit",
+			Size = UDim2.fromOffset(160, 36),
+			Position = UDim2.new(1, -14, 0, 4),
+			AnchorPoint = Vector2.new(1, 0),
+			BackgroundTransparency = 1,
+			Font = FONT,
+			Text = "Created by Elaine",
+			TextSize = 18,
+			TextColor3 = Color3.new(1, 1, 1),
+			TextStrokeTransparency = 0.6,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			Parent = settingsPopup,
+		})
 	end
 
 	onLeftClick(settingsButton, api.openSettings)
